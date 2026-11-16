@@ -1,428 +1,457 @@
-import re
-from datetime import datetime, time
-from io import BytesIO, StringIO
-from urllib.parse import urlparse
-from zipfile import ZipFile
-from zoneinfo import ZoneInfo
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
+from sklearn.linear_model import Ridge
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-import requests
-import statsmodels.api as sm
-import streamlit as st
-import yfinance as yf
-from statsmodels.regression.rolling import RollingOLS
 
-st.set_page_config(page_title="Asset Pricing Terminal", page_icon="📈", layout="wide")
+UNIVERSE = {
+    "Technology": (
+        "AAPL:Apple,MSFT:Microsoft,NVDA:Nvidia,AMD:AMD,AVGO:Broadcom,"
+        "ORCL:Oracle,CRM:Salesforce,ADBE:Adobe,INTC:Intel,QCOM:Qualcomm,"
+        "MU:Micron,AMAT:Applied Materials,LRCX:Lam Research,KLAC:KLA,"
+        "NOW:ServiceNow,PLTR:Palantir,CSCO:Cisco,DELL:Dell,IBM:IBM,"
+        "PANW:Palo Alto Networks,CRWD:CrowdStrike,TSM:TSMC ADR,ASML:ASML ADR"
+    ),
+    "Internet & Consumer": (
+        "GOOGL:Alphabet,META:Meta,AMZN:Amazon,NFLX:Netflix,TSLA:Tesla,"
+        "UBER:Uber,DASH:DoorDash,ABNB:Airbnb,BKNG:Booking Holdings,"
+        "WMT:Walmart,COST:Costco,HD:Home Depot,LOW:Lowe’s,NKE:Nike,"
+        "MCD:McDonald’s,SBUX:Starbucks,KO:Coca-Cola,PEP:PepsiCo,PG:Procter & Gamble,"
+        "DIS:Disney,SPOT:Spotify,SHOP:Shopify"
+    ),
+    "Financials": (
+        "JPM:JPMorgan,BAC:Bank of America,GS:Goldman Sachs,MS:Morgan Stanley,"
+        "C:Citigroup,WFC:Wells Fargo,BLK:BlackRock,BRK-B:Berkshire Hathaway,"
+        "V:Visa,MA:Mastercard,AXP:American Express,SCHW:Charles Schwab,"
+        "KKR:KKR,BX:Blackstone,COIN:Coinbase,HOOD:Robinhood"
+    ),
+    "Health Care": (
+        "LLY:Eli Lilly,UNH:UnitedHealth,JNJ:Johnson & Johnson,ABBV:AbbVie,"
+        "MRK:Merck,PFE:Pfizer,TMO:Thermo Fisher,ISRG:Intuitive Surgical,"
+        "AMGN:Amgen,VRTX:Vertex,GILD:Gilead,DHR:Danaher"
+    ),
+    "Industrials & Energy": (
+        "GE:GE Aerospace,BA:Boeing,CAT:Caterpillar,DE:Deere,HON:Honeywell,"
+        "RTX:RTX,LMT:Lockheed Martin,UNP:Union Pacific,UPS:UPS,FDX:FedEx,"
+        "ETN:Eaton,XOM:ExxonMobil,CVX:Chevron,COP:ConocoPhillips,"
+        "SLB:SLB,NEE:NextEra Energy,CEG:Constellation Energy,LIN:Linde,FCX:Freeport-McMoRan"
+    ),
+    "Broad market & Style ETFs": (
+        "SPY:S&P 500,VOO:Vanguard S&P 500,IVV:iShares S&P 500,QQQ:Nasdaq-100,"
+        "QQQM:Invesco Nasdaq-100,IWM:Russell 2000,IWV:Russell 3000,"
+        "VTI:Total US Market,DIA:Dow Jones,VT:Total World,VXUS:International Equity,"
+        "EFA:Developed Markets,EEM:Emerging Markets,VEA:Developed ex-US,"
+        "VWO:Emerging Markets,RSP:Equal-Weight S&P 500,SCHD:Dividend Equity,"
+        "VUG:US Growth,VTV:US Value,MTUM:US Momentum,QUAL:US Quality,USMV:Min Vol USA"
+    ),
+    "Sector & Thematic ETFs": (
+        "XLK:Technology,XLF:Financials,XLE:Energy,XLV:Health Care,"
+        "XLY:Consumer Discretionary,XLP:Consumer Staples,XLI:Industrials,"
+        "XLB:Materials,XLU:Utilities,XLRE:Real Estate,XLC:Communication Services,"
+        "SMH:Semiconductors,SOXX:Semiconductors,IGV:Software,XBI:Biotech,"
+        "KRE:Regional Banks,ITA:Aerospace & Defense,JETS:Airlines,ARKK:Innovation,"
+        "TAN:Solar,ICLN:Clean Energy,URA:Uranium"
+    ),
+    "Bonds, Commodities & Digital Asset ETFs": (
+        "TLT:Long Treasuries,IEF:Intermediate Treasuries,SHY:Short Treasuries,"
+        "SGOV:Treasury Bills,BND:Total US Bonds,AGG:US Aggregate Bonds,"
+        "LQD:Investment Grade Credit,HYG:High Yield Credit,TIP:Inflation Protected,"
+        "GLD:Gold,IAU:Gold,SLV:Silver,USO:Oil,DBC:Commodities,"
+        "IBIT:Spot Bitcoin,FBTC:Spot Bitcoin,ETHA:Spot Ether"
+    ),
+}
+MODEL_NAMES = ["Ridge", "Random Forest", "Gradient Boosting"]
 
-NY = ZoneInfo("America/New_York")
-ZURICH = ZoneInfo("Europe/Zurich")
-MARKETS = {
-    "^GSPC": "S&P 500",
-    "^NDX": "Nasdaq-100",
-    "^IXIC": "Nasdaq Composite",
-    "^RUT": "Russell 2000",
-    "^VIX": "VIX",
-}
-SECTORS = {
-    "XLK": "Technology", "XLF": "Financials", "XLE": "Energy",
-    "XLV": "Health Care", "XLY": "Consumer Discretionary",
-    "XLP": "Consumer Staples", "XLI": "Industrials", "XLB": "Materials",
-    "XLU": "Utilities", "XLRE": "Real Estate", "XLC": "Communication Services",
-}
-MODELS = {
-    "CAPM": ["Mkt-RF"],
-    "FF3": ["Mkt-RF", "SMB", "HML"],
-    "FF5": ["Mkt-RF", "SMB", "HML", "RMW", "CMA"],
-}
-FACTOR_FILES = {
-    "FF3": "F-F_Research_Data_Factors_daily_CSV.zip",
-    "FF5": "F-F_Research_Data_5_Factors_2x3_daily_CSV.zip",
-}
-FRENCH_BASE = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/"
+
+def forecast_models():
+    return {
+        "Ridge": make_pipeline(StandardScaler(), Ridge(alpha=5.0)),
+        "Random Forest": RandomForestRegressor(
+            n_estimators=100, max_depth=6, min_samples_leaf=12,
+            random_state=42, n_jobs=1,
+        ),
+        "Gradient Boosting": HistGradientBoostingRegressor(
+            max_iter=90, max_leaf_nodes=12, learning_rate=0.05,
+            min_samples_leaf=20, early_stopping=False, random_state=42,
+        ),
+    }
+
+
+def completed_bars(frame):
+    now = pd.Timestamp.now(tz="UTC")
+    index = frame.index
+    utc_index = index.tz_localize("UTC") if index.tz is None else index.tz_convert("UTC")
+    return frame.loc[utc_index + pd.Timedelta(minutes=5) <= now]
+
+
+def features_from_prices(asset, spy, qqq, intraday):
+    panel = pd.concat(
+        [asset.rename("Asset"), spy.rename("SPY"), qqq.rename("QQQ")],
+        axis=1, join="inner",
+    ).dropna().sort_index()
+    panel = panel.where(panel > 0).dropna()
+    log_price = np.log(panel)
+    moves = log_price.diff()
+    features = moves.rename(columns={"Asset": "Asset_1", "SPY": "SPY_1", "QQQ": "QQQ_1"})
+    for lookback in [3, 5, 10, 20]:
+        features[f"Asset_{lookback}"] = log_price["Asset"].diff(lookback)
+        features[f"SPY_{lookback}"] = log_price["SPY"].diff(lookback)
+        features[f"QQQ_{lookback}"] = log_price["QQQ"].diff(lookback)
+    features["Volatility_10"] = moves["Asset"].rolling(10).std()
+    features["Volatility_20"] = moves["Asset"].rolling(20).std()
+    features["Relative_to_SPY_10"] = features["Asset_10"] - features["SPY_10"]
+    features["Relative_to_QQQ_10"] = features["Asset_10"] - features["QQQ_10"]
+    if intraday:
+        timestamps = panel.index.to_series()
+        continuous = timestamps.diff(20).eq(pd.Timedelta(minutes=100))
+        features = features.where(continuous, axis=0)
+    return panel["Asset"], features
+
+
+def direction_score(actual, prediction):
+    up = actual > 0
+    down = actual < 0
+    if up.sum() < 5 or down.sum() < 5:
+        return np.nan
+    return float(((prediction[up] > 0).mean() + (prediction[down] < 0).mean()) / 2)
 
 
 @st.cache_data(ttl=300, max_entries=64, show_spinner=False)
-def prices(symbols, period, interval, adjusted):
-    fetched = pd.Timestamp.now(tz="UTC")
-    try:
-        raw = yf.download(
-            list(symbols), period=period, interval=interval,
-            auto_adjust=adjusted, prepost=False, group_by="ticker",
-            multi_level_index=True, progress=False, threads=4, timeout=10,
+def estimate_forecast(asset, spy, qqq, horizon, intraday):
+    close, features = features_from_prices(asset, spy, qqq, intraday)
+    if features.empty or features.iloc[-1].isna().any():
+        return None
+
+    target = np.log(close.shift(-horizon) / close)
+    bar_position = pd.Series(np.arange(len(close)), index=close.index)
+    if intraday:
+        timestamps = close.index.to_series()
+        continuous = (timestamps.shift(-horizon) - timestamps).eq(
+            pd.Timedelta(minutes=5 * horizon)
         )
-    except Exception:
-        return {}, fetched
+        target = target.where(continuous)
 
-    result = {}
-    if raw is None or raw.empty:
-        return result, fetched
-    for symbol in symbols:
-        if symbol not in raw.columns.get_level_values(0):
-            continue
-        frame = raw[symbol].dropna(subset=["Close"]).sort_index()
-        if not frame.empty:
-            result[symbol] = frame.loc[~frame.index.duplicated(keep="last")]
-    return result, fetched
+    dataset = features.join(target.rename("Target")).join(
+        bar_position.rename("Position")
+    ).dropna()
+    # Sample the holdout at the forecast horizon so its returns do not overlap.
+    if len(dataset) < max(180, 30 * horizon):
+        return None
+    split = int(len(dataset) * 0.75)
+    test = dataset.iloc[split::horizon]
+    train = dataset.loc[dataset["Position"] + horizon < test["Position"].iloc[0]]
+    if len(train) < 120 or len(test) < 12:
+        return None
 
+    columns = features.columns
+    actual = test["Target"].to_numpy()
+    validation_predictions, current_predictions = {}, {}
+    for name, model in forecast_models().items():
+        model.fit(train[columns], train["Target"])
+        validation_predictions[name] = model.predict(test[columns])
+        model.fit(dataset[columns], dataset["Target"])
+        current_predictions[name] = float(model.predict(features.iloc[[-1]])[0])
 
-@st.cache_data(ttl=21600, max_entries=2, show_spinner=False)
-def french_factors(dataset):
-    response = requests.get(FRENCH_BASE + FACTOR_FILES[dataset], timeout=15)
-    response.raise_for_status()
-    with ZipFile(BytesIO(response.content)) as archive:
-        filename = next(name for name in archive.namelist() if name.lower().endswith(".csv"))
-        lines = archive.read(filename).decode("latin-1").splitlines()
-
-    header = next(line for line in lines if "Mkt-RF" in line and "RF" in line)
-    rows = [line for line in lines if re.match(r"^\s*\d{8}\s*,", line)]
-    if not rows:
-        raise ValueError("The factor file contains no daily rows.")
-    frame = pd.read_csv(StringIO("\n".join(["Date" + header.strip(), *rows])))
-    frame.columns = frame.columns.str.strip()
-    frame.index = pd.to_datetime(frame.pop("Date").astype(str), format="%Y%m%d")
-    frame = frame.apply(pd.to_numeric, errors="coerce").replace([-99.99, -999], np.nan)
-    return frame.sort_index() / 100
-
-
-def daily_close(frame):
-    close = frame["Close"].copy()
-    if close.index.tz is not None:
-        close.index = close.index.tz_localize(None)
-    close.index = close.index.normalize()
-    # Exclude an open US session from daily regressions and return baselines.
-    now = datetime.now(NY)
-    if now.time() < time(16, 15):
-        close = close.loc[close.index < pd.Timestamp(now.date())]
-    return close
-
-
-@st.cache_data(ttl=300, max_entries=128, show_spinner=False)
-def headlines(symbol):
-    try:
-        items = yf.Ticker(symbol).get_news(count=12)
-        rows = []
-        for item in items or []:
-            article = item.get("content") or item
-            title = str(article.get("title") or "").strip()
-            link = (
-                (article.get("canonicalUrl") or {}).get("url")
-                or (article.get("clickThroughUrl") or {}).get("url")
-                or article.get("link", "")
-            )
-            url = urlparse(link)
-            if not title or url.scheme not in {"https", "http"} or not url.netloc:
-                continue
-            published = article.get("pubDate") or article.get("providerPublishTime")
-            stamp = (
-                pd.to_datetime(published, unit="s", utc=True, errors="coerce")
-                if isinstance(published, (int, float))
-                else pd.to_datetime(published, utc=True, errors="coerce")
-            )
-            publisher = (article.get("provider") or {}).get("displayName")
-            rows.append({
-                "Headline": title, "Publisher": publisher or article.get("publisher", ""),
-                "Published": stamp, "URL": link,
-            })
-        return rows, True
-    except Exception:
-        return [], False
-
-
-def session_bars(frame):
-    index = frame.index
-    if index.tz is None:
-        index = index.tz_localize("UTC")
-    local = frame.set_axis(index.tz_convert(NY))
-    return local.loc[local.index.date == local.index[-1].date()]
-
-
-def quote_table(labels, intraday, history):
-    records = []
-    for symbol, name in labels.items():
-        intr = intraday.get(symbol)
-        daily = history.get(symbol)
-        change = np.nan
-        if intr is None:
-            records.append({
-                "Instrument": name, "Ticker": symbol, "Price": np.nan,
-                "Session move": np.nan, "Latest bar (ET)": "Unavailable",
-            })
-            continue
-        bars = session_bars(intr)
-        stamp = bars.index[-1]
-        quote = float(bars["Close"].iloc[-1])
-        if daily is not None:
-            prior = daily_close(daily)
-            prior = prior.loc[prior.index < pd.Timestamp(stamp.date())]
-            if not prior.empty and prior.iloc[-1] > 0:
-                change = 100 * (quote / prior.iloc[-1] - 1)
-        records.append({
-            "Instrument": name, "Ticker": symbol, "Price": quote,
-            "Session move": change, "Latest bar (ET)": stamp.strftime("%b %d %H:%M"),
+    ensemble_test = np.mean(list(validation_predictions.values()), axis=0)
+    prediction = float(np.mean(list(current_predictions.values())))
+    errors = actual - ensemble_test
+    lower_error, upper_error = np.quantile(errors, [0.10, 0.90])
+    baseline_mae = float(np.abs(np.expm1(actual)).mean())
+    ensemble_mae = float(np.abs(np.expm1(actual) - np.expm1(ensemble_test)).mean())
+    rows = []
+    validation_predictions["Ensemble"] = ensemble_test
+    current_predictions["Ensemble"] = prediction
+    for name, values in validation_predictions.items():
+        rows.append({
+            "Model": name,
+            "Projected return %": 100 * np.expm1(current_predictions[name]),
+            "Holdout MAE (pp)": 100 * np.abs(np.expm1(actual) - np.expm1(values)).mean(),
+            "Balanced directional accuracy %": 100 * direction_score(actual, values),
         })
-    return pd.DataFrame(records)
+
+    votes = [current_predictions[name] for name in MODEL_NAMES]
+    agreement = sum(np.sign(vote) == np.sign(prediction) for vote in votes)
+    accuracy = direction_score(actual, ensemble_test)
+    anchor = float(close.iloc[-1])
+    return {
+        "rows": rows, "anchor": anchor, "as_of": close.index[-1],
+        "forecast": anchor * np.exp(prediction),
+        "return": float(np.expm1(prediction)),
+        "range": (anchor * np.exp(prediction + lower_error),
+                  anchor * np.exp(prediction + upper_error)),
+        "agreement": agreement, "accuracy": accuracy,
+        "mae": ensemble_mae, "baseline": baseline_mae, "n": len(test),
+        "test_start": test.index[0], "test_end": test.index[-1],
+    }
 
 
-def fit_model(sample, columns):
-    y = sample["Return"] - sample["RF"]
-    x = sm.add_constant(sample[columns], has_constant="add")
-    return sm.OLS(y, x).fit(
-        cov_type="HAC", cov_kwds={"maxlags": 5, "use_correction": True},
-        use_t=True,
+def draw_forecast(result, intraday, min_move):
+    if result is None:
+        st.info("A forecast is unavailable for this horizon and data history.")
+        return
+
+    stamp = result["as_of"]
+    fresh = True
+    if intraday:
+        stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+        bar_end = stamp + pd.Timedelta(minutes=5)
+        now = pd.Timestamp.now(tz="UTC")
+        target_et = (bar_end + pd.Timedelta(minutes=30)).tz_convert(NY)
+        fresh = (
+            now - bar_end <= pd.Timedelta(minutes=15)
+            and (16, 0) >= (target_et.hour, target_et.minute)
+            and target_et.date() == now.tz_convert(NY).date()
+        )
+
+    estimated = result["return"]
+    qualified = (
+        fresh and result["n"] >= 30
+        and result["mae"] < result["baseline"]
+        and result["accuracy"] >= 0.55
+        and result["agreement"] == len(MODEL_NAMES)
+        and abs(estimated) >= min_move
     )
+    label = ("BUY BIAS" if estimated > 0 else "SELL BIAS") if qualified else "WAIT"
+    cards = st.columns(4)
+    cards[0].metric("Research signal", label)
+    cards[1].metric("Projected price", f"${result['forecast']:,.2f}", f"{estimated:+.2%}")
+    lo, hi = result["range"]
+    cards[2].metric("Historical error range", f"${lo:,.2f} – ${hi:,.2f}")
+    cards[3].metric("Model agreement", f"{result['agreement']}/{len(MODEL_NAMES)}")
+    if intraday:
+        st.caption(f"Anchor ${result['anchor']:,.2f} · bar ending {bar_end.tz_convert(NY):%b %d, %H:%M} ET")
+        if not fresh:
+            st.warning("Historical intraday forecast. A fresh 30-minute regular-session signal is unavailable.")
+    else:
+        st.caption(f"Anchor ${result['anchor']:,.2f} · adjusted daily close on {stamp:%Y-%m-%d}")
 
-
-def relative_score(sample, columns, days):
-    train = sample.iloc[:-days]
-    recent = sample.iloc[-days:]
-    model = fit_model(train, columns)
-    x = sm.add_constant(recent[columns], has_constant="add")
-    baseline = recent["RF"] + x[columns] @ model.params[columns]
-    if (baseline <= -1).any() or (recent["Return"] <= -1).any():
-        return None
-
-    # Use non-overlapping, equally long training blocks to estimate dispersion.
-    residual = np.log1p(train["Return"]) - np.log1p(
-        train["RF"] + train[columns] @ model.params[columns]
+    st.dataframe(pd.DataFrame(result["rows"]).round(3), hide_index=True)
+    st.caption(
+        f"Holdout {result['test_start']:%Y-%m-%d} to {result['test_end']:%Y-%m-%d} · "
+        f"{result['n']} non-overlapping forecasts · "
+        f"flat-price baseline MAE {100 * result['baseline']:.3f} percentage points."
     )
-    if not np.isfinite(residual).all():
-        return None
-    block_count = len(residual) // days
-    if block_count < 10:
-        return None
-    blocks = residual.to_numpy()[-block_count * days:].reshape(-1, days).sum(axis=1)
-    scale = blocks.std(ddof=1)
-    if not np.isfinite(scale) or scale <= 1e-12:
-        return None
-    observed = np.log1p(recent["Return"]).sum()
-    implied = np.log1p(baseline).sum()
-    return (observed - implied) / scale, np.expm1(observed), np.expm1(implied)
+    with st.expander("What do these forecast numbers mean?"):
+        st.markdown(
+            """
+- **Projected return** is the average predicted log return from the three models,
+  converted to a percentage. Projected price applies that return to the displayed anchor.
+- **Historical error range** uses the 10th and 90th percentiles of the holdout log-return
+  errors. Future outcomes can fall outside it, especially around earnings or economic releases.
+- **MAE** measures the typical absolute prediction error in percentage points. An MAE of
+  2.0 means the return forecast missed by two percentage points on average.
+- **Balanced directional accuracy** gives rising and falling observations equal weight.
+  A model that predicts up every time scores 50% when both directions are present.
+- **Buy / Sell bias** requires all three models to agree, at least 30 holdout forecasts,
+  at least 55% balanced directional accuracy, lower MAE than a flat-price forecast,
+  and a move above your threshold. These are screening thresholds. The holdout measures
+  forecast errors and does not estimate strategy profitability after costs.
+            """
+        )
 
 
-st.title("Asset Pricing Terminal")
-st.caption("US equities and ETFs · New York market time · Five-minute feed refresh")
+st.markdown(
+    """
+<style>
+.stApp {background: #0b1422; color: #e4edf7;}
+[data-testid="stSidebar"] {background: #111e30;}
+[data-testid="stHeader"] {background: transparent;}
+h1, h2, h3, label, [data-testid="stMarkdownContainer"], [data-testid="stCaptionContainer"] {
+    color: #e4edf7 !important;
+}
+[data-testid="stMetric"] {
+    background: #142337;
+    border: 1px solid #293d57;
+    border-radius: 12px;
+    padding: 0.8rem 1rem;
+}
+[data-testid="stMetricValue"], [data-testid="stMetricLabel"] {color: #e4edf7;}
+.block-container {max-width: 1480px; padding-top: 2.5rem;}
+</style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.title("US Equity Research Terminal")
+st.caption("Nasdaq · S&P 500 · US-listed stocks and ETFs")
 
 with st.sidebar:
-    ticker = st.text_input("US ticker", "NVDA", max_chars=15).strip().upper()
-    years = st.selectbox("Daily regression history", [1, 2, 3, 5], index=2)
-    window = st.selectbox("Relative pricing window", [5, 10, 20], index=1)
-    chosen_model = st.radio("Active model", list(MODELS), index=2, horizontal=True)
-    auto_refresh = st.toggle("Refresh every five minutes", value=True)
-    fair = st.number_input("Your fair value per share (USD)", min_value=0.0, step=1.0)
-    st.caption("Use a US-listed USD stock or ETF. Leave fair value at zero to skip the comparison.")
+    group = st.selectbox("Asset group", ["All stocks & ETFs", *UNIVERSE])
+    groups = UNIVERSE.values() if group == "All stocks & ETFs" else [UNIVERSE[group]]
+    options = dict(
+        entry.split(":", 1) for listing in groups for entry in listing.split(",")
+    )
+    default_index = list(options).index("NVDA") if "NVDA" in options else 0
+    selected = st.selectbox(
+        "Search company or ticker", list(options), index=default_index,
+        format_func=lambda symbol: f"{symbol} · {options[symbol]}",
+    )
+    custom = st.text_input("Custom US ticker", max_chars=15).strip().upper()
+    ticker = custom or selected
+    if not re.fullmatch(r"[A-Z0-9]+(?:-[A-Z0-9]+)?", ticker):
+        st.warning("Enter a ticker such as AAPL, BRK-B, or QQQ.")
+        st.stop()
 
-if not re.fullmatch(r"[A-Z0-9]+(?:-[A-Z0-9]+)?", ticker):
-    st.warning("Enter a US stock or ETF ticker such as AAPL, BRK-B, SPY, or QQQ.")
-    st.stop()
+    page = st.radio("View", ["Overview", "Factor models", "Forecasts", "News"])
+    auto_refresh = st.toggle("Refresh every five minutes", value=True)
+    if page == "Overview":
+        fair = st.number_input("Your fair value estimate ($)", min_value=0.0, step=1.0)
+    elif page == "Factor models":
+        years = st.selectbox("Regression history (years)", [1, 2, 3, 5], index=2)
+        window = st.selectbox("Relative pricing window (sessions)", [5, 10, 20], index=1)
+        chosen_model = st.radio("Active model", list(MODELS), index=2, horizontal=True)
+    elif page == "Forecasts":
+        segment = st.radio("Forecast horizon", ["30 minutes", "1 session", "5 sessions", "20 sessions"])
+        intraday_forecast = segment == "30 minutes"
+        threshold = st.number_input(
+            "Minimum absolute predicted move (%)", min_value=0.0, max_value=20.0,
+            value=0.15 if intraday_forecast else 0.5, step=0.05,
+            key=f"threshold_{segment}",
+        ) / 100
+
+
+def draw_market():
+    symbols = tuple(dict.fromkeys([ticker, *MARKETS, *SECTORS]))
+    bars, checked = prices(symbols, "5d", "5m", False)
+    daily, _ = prices(symbols, "1mo", "1d", False)
+    market = quote_table(MARKETS, bars, daily)
+    for card, (_, row) in zip(st.columns(len(MARKETS)), market.iterrows()):
+        quote, change = row["Price"], row["Session move"]
+        card.metric(
+            row["Instrument"], "—" if pd.isna(quote) else f"{quote:,.2f}",
+            None if pd.isna(change) else f"{change:+.2f}%",
+        )
+    st.caption(f"Yahoo Finance request · {checked.tz_convert(ZURICH):%b %d, %H:%M:%S} Zurich")
+    st.subheader(f"{ticker} · Price and volume")
+    if ticker in bars:
+        session = session_bars(bars[ticker])
+        quote = float(session["Close"].iloc[-1])
+        quote_card, bar_card, value_card = st.columns(3)
+        quote_card.metric("Latest bar close", f"${quote:,.2f}")
+        bar_card.metric("Latest bar start (ET)", session.index[-1].strftime("%b %d · %H:%M"))
+        if fair > 0:
+            value_card.metric("Gap to your fair value", f"{quote / fair - 1:+.2%}")
+        chart = go.Figure(go.Candlestick(
+            x=session.index, open=session["Open"], high=session["High"],
+            low=session["Low"], close=session["Close"],
+            increasing_line_color="#39c9aa", decreasing_line_color="#ff737f",
+        ))
+        chart.update_layout(
+            template="plotly_dark", paper_bgcolor="#0b1422", plot_bgcolor="#0b1422",
+            height=420, xaxis_rangeslider_visible=False, yaxis_title="USD",
+            xaxis_title="New York time", margin={"l": 0, "r": 0, "t": 12, "b": 0},
+        )
+        st.plotly_chart(chart, use_container_width=True)
+        if "Volume" in session and session["Volume"].sum() > 0:
+            st.bar_chart(session["Volume"].rename("Shares traded per bar"), color="#4f9fea")
+    else:
+        st.warning(f"Yahoo Finance returned no five-minute bars for {ticker}.")
+
+    st.subheader("Sector performance")
+    sectors = quote_table(SECTORS, bars, daily)
+    st.dataframe(sectors.sort_values("Session move", ascending=False).round(2), hide_index=True)
+    with st.expander("What do these market numbers mean?"):
+        st.markdown(
+            """
+- **Session move** compares the latest reported bar close with the previous daily close.
+  Use the displayed bar time to distinguish an active session from the last available session.
+- **Candles** show the open, high, low, and close of each five-minute bar. The latest
+  candle can still be forming.
+- **Gap to fair value** compares market price with the value you entered. A −10% gap
+  means the current price is 10% below your estimate.
+- **Sector performance** compares sector ETF moves. VIX is an index of expected volatility,
+  so its percentage move describes changing implied volatility rather than an equity return.
+            """
+        )
+
+
+def draw_factor_guide():
+    with st.expander("What do these factor-model numbers mean?", expanded=True):
+        st.markdown(
+            """
+| Metric | How to read it |
+|---|---|
+| **Market beta** | A beta of 1.25 means a one-percentage-point rise in the market excess return was associated with about a 1.25-point increase in the asset's excess return, holding the other included factors fixed. |
+| **Alpha** | Average daily excess return left unexplained by the fitted factors. The annualized figure multiplies daily alpha by 252. |
+| **t-statistic** | Estimate divided by its HAC standard error. A larger absolute t-stat indicates stronger evidence against a zero coefficient under the model assumptions. |
+| **p-value and 95% interval** | A p-value below 0.05 and an interval excluding zero indicate significance at the 5% level for the reported coefficient test. |
+| **Adjusted R²** | How much variation in daily excess returns the model explains, adjusted for the number of predictors. |
+| **Residual volatility** | Annualized variability in returns left unexplained by the model. |
+| **Relative-pricing score** | Positive means the asset outperformed its factor-implied return. Negative means it underperformed. A score of +2 is about two historical residual standard deviations above the factor baseline. |
+| **Rolling beta** | Shows how market sensitivity changes using the most recent 126 aligned sessions at each point. |
+
+**CAPM** uses market exposure. **FF3** adds size (SMB) and value (HML).
+**FF5** also adds profitability (RMW) and investment (CMA).
+The relative-pricing score measures historical return deviation. The dashboard shows the
+last matched factor date so you can see any publication lag.
+            """
+        )
+
+
+def draw_news():
+    st.subheader("Company & market news")
+    frames = []
+    for symbol in dict.fromkeys([ticker, "SPY", "QQQ"]):
+        rows, ok = headlines(symbol)
+        if not ok or not rows:
+            st.caption(f"No headlines returned for {symbol}.")
+        if rows:
+            frames.append(pd.DataFrame(rows).assign(Feed=symbol))
+    if frames:
+        news = pd.concat(frames, ignore_index=True)
+        news["Feed"] = news.groupby("URL")["Feed"].transform(
+            lambda values: ", ".join(dict.fromkeys(values))
+        )
+        news["Published"] = pd.to_datetime(news["Published"], utc=True).dt.tz_convert(ZURICH)
+        st.dataframe(
+            news.drop_duplicates("URL").sort_values("Published", ascending=False)
+            [["Published", "Feed", "Headline", "Publisher", "URL"]],
+            hide_index=True,
+            column_config={"URL": st.column_config.LinkColumn("Article", display_text="Open")},
+        )
+    st.caption("Headlines are market context. Forecasts use timestamped price data and benchmark returns.")
 
 
 @st.fragment(run_every="5m" if auto_refresh else None)
-def dashboard():
+def research_terminal():
     if st.button("Refresh feeds now"):
         prices.clear()
         headlines.clear()
+        french_factors.clear()
+        estimate_forecast.clear()
 
-    symbols = tuple(dict.fromkeys([ticker, *MARKETS, *SECTORS]))
-    intraday, checked = prices(symbols, "5d", "5m", False)
-    quote_history, _ = prices(symbols, "1mo", "1d", False)
-    previous = st.session_state.get("last_bars", {})
-    st.session_state["last_bars"] = {**previous, **intraday}
-    missing = set(symbols) - set(intraday)
-    intraday = {
-        symbol: st.session_state["last_bars"][symbol]
-        for symbol in symbols
-        if symbol in st.session_state["last_bars"]
-    }
-    retained = sorted(missing & intraday.keys())
-    if retained:
-        st.warning("Last available bars shown for " + ", ".join(retained))
-
-    st.caption(f"Yahoo request at {checked.tz_convert(ZURICH):%H:%M:%S} Zurich time. "
-               "Check the bar time before using the displayed price.")
-    live, factors_tab, news = st.tabs(["Market & price", "Factor analysis", "Public news"])
-
-    with live:
-        st.subheader("US market")
-        st.dataframe(
-            quote_table(MARKETS, intraday, quote_history),
-            hide_index=True,
-            column_config={
-                "Price": st.column_config.NumberColumn(format="%.2f"),
-                "Session move": st.column_config.NumberColumn(format="%+.2f%%"),
-            },
-        )
-        st.subheader(ticker)
-        if ticker in intraday:
-            bars = session_bars(intraday[ticker])
-            latest = bars.index[-1]
-            price = float(bars["Close"].iloc[-1])
-            asset_row = quote_table({ticker: ticker}, intraday, quote_history).iloc[0]
-            move = asset_row["Session move"]
-            cols = st.columns(3)
-            cols[0].metric("Latest bar close", f"${price:,.2f}")
-            cols[1].metric("Vs. previous session close", f"{move:+.2f}%" if pd.notna(move) else "—")
-            cols[2].metric("Latest bar start (ET)", latest.strftime("%b %d · %H:%M"))
-            if fair > 0:
-                gap = 100 * (price / fair - 1)
-                label = "Above" if gap > 0 else "Below" if gap < 0 else "At"
-                st.metric(f"{label} your fair value of ${fair:,.2f}", f"{gap:+.2f}%")
-            chart = go.Figure(go.Candlestick(
-                x=bars.index, open=bars["Open"], high=bars["High"],
-                low=bars["Low"], close=bars["Close"], name=ticker,
-            ))
-            chart.update_layout(
-                height=420, xaxis_rangeslider_visible=False,
-                yaxis_title="USD", xaxis_title="Bar start (New York time)",
-                margin={"l": 0, "r": 0, "t": 10, "b": 0},
-            )
-            st.plotly_chart(chart, use_container_width=True)
-            if "Volume" in bars and bars["Volume"].sum() > 0:
-                st.bar_chart(bars["Volume"].rename("Shares per five-minute bar"))
-        else:
-            st.info("No five-minute bars were returned for this ticker.")
-
-        sector_moves = quote_table(SECTORS, intraday, quote_history)
-        dates = sector_moves["Latest bar (ET)"].str.slice(0, 6)
-        latest_sector_dates = [
-            session_bars(intraday[symbol]).index[-1].date()
-            for symbol in SECTORS if symbol in intraday
-        ]
-        if latest_sector_dates:
-            target = max(latest_sector_dates).strftime("%b %d")
-            sectors = sector_moves.loc[dates.eq(target)].dropna(subset=["Session move"])
-            if not sectors.empty:
-                st.subheader(f"Sector rotation · {target}")
-                st.bar_chart(
-                    sectors.sort_values("Session move").set_index("Instrument")["Session move"],
-                    horizontal=True,
-                )
-
-    with factors_tab:
+    if page == "Overview":
+        draw_market()
+        return
+    if page == "Factor models":
         render_factors()
-
-    with news:
-        st.caption("Yahoo Finance publisher headlines · times shown in Zurich")
-        all_rows = []
-        for symbol in dict.fromkeys([ticker, "SPY", "QQQ"]):
-            rows, ok = headlines(symbol)
-            if not ok or not rows:
-                st.caption(f"No headlines returned for {symbol}.")
-            all_rows.extend({**row, "Feed": symbol} for row in rows)
-        if all_rows:
-            feed = pd.DataFrame(all_rows)
-            feed["Feed"] = feed.groupby("URL")["Feed"].transform(
-                lambda values: ", ".join(dict.fromkeys(values))
-            )
-            feed = feed.drop_duplicates("URL").sort_values("Published", ascending=False)
-            feed["Published"] = pd.to_datetime(feed["Published"], utc=True).dt.tz_convert(ZURICH)
-            st.dataframe(
-                feed[["Published", "Feed", "Headline", "Publisher", "URL"]],
-                hide_index=True,
-                column_config={"URL": st.column_config.LinkColumn("Article", display_text="Open")},
-            )
-
-
-def render_factors():
-    st.subheader(f"{ticker} factor exposures")
-    daily, _ = prices((ticker,), f"{years}y", "1d", True)
-    if ticker not in daily:
-        st.warning("Adjusted daily Yahoo Finance history is unavailable.")
+        draw_factor_guide()
+        return
+    if page == "News":
+        draw_news()
         return
 
-    try:
-        ff3, ff5 = french_factors("FF3"), french_factors("FF5")
-    except (requests.RequestException, ValueError, KeyError, StopIteration, OSError) as exc:
-        st.warning(f"Could not load the Kenneth French datasets ({type(exc).__name__}).")
+    st.subheader(f"{ticker} · {segment} forecast")
+    symbols = tuple(dict.fromkeys([ticker, "SPY", "QQQ"]))
+    if intraday_forecast:
+        feed, _ = prices(symbols, "1mo", "5m", True)
+        close_series = {symbol: completed_bars(frame)["Close"] for symbol, frame in feed.items()}
+        horizon = 6
+    else:
+        feed, _ = prices(symbols, "5y", "1d", True)
+        close_series = {symbol: daily_close(frame) for symbol, frame in feed.items()}
+        horizon = int(segment.split()[0])
+
+    if any(symbol not in close_series for symbol in symbols):
+        st.warning("The selected ticker or one of the benchmark feeds is unavailable.")
         return
 
-    close = daily_close(daily[ticker])
-    returns = close.pct_change(fill_method=None).rename("Return")
-    # Align both publications and calculate every regression on the same dates.
-    common = (
-        returns.to_frame()
-        .join(ff3[MODELS["FF3"] + ["RF"]].add_suffix("_3"), how="inner")
-        .join(ff5[MODELS["FF5"] + ["RF"]].add_suffix("_5"), how="inner")
-        .dropna()
-    )
-    if len(common) < 60:
-        st.warning(f"Only {len(common)} aligned daily observations. At least 60 are required.")
-        return
-
-    st.caption(
-        f"{len(common):,} common daily observations · "
-        f"{common.index.min():%Y-%m-%d} to {common.index.max():%Y-%m-%d}. "
-        f"Latest adjusted price date: {close.index.max():%Y-%m-%d}. "
-        "Official daily factors can lag Yahoo, so the relative pricing signal can lag the quote."
-    )
-
-    summaries, coefficients, samples = [], [], {}
-    for name, columns in MODELS.items():
-        suffix = "_5" if name == "FF5" else "_3"
-        factor_names = columns + ["RF"]
-        sample = common[["Return", *[factor + suffix for factor in factor_names]]]
-        sample = sample.rename(columns={factor + suffix: factor for factor in factor_names})
-        samples[name] = sample
-        model = fit_model(sample, columns)
-        ci = model.conf_int()
-
-        summaries.append({
-            "Model": name, "Market beta": model.params["Mkt-RF"],
-            "Beta t-stat vs 0": model.tvalues["Mkt-RF"],
-            "Alpha × 252 (%)": 25200 * model.params["const"],
-            "Alpha t-stat": model.tvalues["const"],
-            "Alpha p-value": model.pvalues["const"],
-            "Adjusted R²": model.rsquared_adj,
-            "Residual vol. (%)": 100 * np.sqrt(252) * model.resid.std(ddof=1),
-            "Observations": int(model.nobs),
-        })
-        for term in model.params.index:
-            multiplier = 10000 if term == "const" else 1
-            coefficients.append({
-                "Model": name, "Term": "Alpha (bp/day)" if term == "const" else term,
-                "Estimate": multiplier * model.params[term],
-                "HAC SE": multiplier * model.bse[term], "t-stat vs 0": model.tvalues[term],
-                "p-value": model.pvalues[term],
-                "95% lower": multiplier * ci.loc[term, 0],
-                "95% upper": multiplier * ci.loc[term, 1],
-            })
-
-    summary = pd.DataFrame(summaries)
-    detail = pd.DataFrame(coefficients)
-    st.dataframe(summary.round(4), hide_index=True)
-    st.dataframe(detail.round(4), hide_index=True)
-    st.download_button(
-        "Download coefficients as CSV", detail.to_csv(index=False),
-        file_name=f"{ticker}_factor_coefficients.csv", mime="text/csv",
-    )
-
-    selected = samples[chosen_model]
-    leverage = MODELS[chosen_model]
-    if len(selected) >= 126:
-        x = sm.add_constant(selected[leverage], has_constant="add")
-        rolling = RollingOLS(selected["Return"] - selected["RF"], x, window=126)
-        beta = rolling.fit(params_only=True).params["Mkt-RF"].dropna()
-        st.subheader(f"126-session rolling market beta · {chosen_model}")
-        st.line_chart(beta.rename("Market beta"))
-
-    st.subheader(f"Relative pricing · {chosen_model}")
-    score = relative_score(selected, leverage, window)
-    if score is None:
-        st.info("This window needs at least ten comparable historical blocks before a score is shown.")
-        return
-
-    z, actual, implied = score
-    label = "Rich vs. factors" if z >= 2 else "Cheap vs. factors" if z <= -2 else "Within usual range"
-    cols = st.columns(3)
-    cols[0].metric(label, f"{z:+.2f}σ")
-    cols[1].metric(f"Actual return · {window} sessions", f"{actual:+.2%}")
-    cols[2].metric("Factor-implied return", f"{implied:+.2%}")
-    st.caption(
-        f"Window ends {selected.index[-1]:%Y-%m-%d}. The baseline uses realized factors "
-        "and exposures fitted before this window. The ±2σ bands use historical residual "
-        "dispersion. This measures relative performance and has no intrinsic-price target."
-    )
+    with st.spinner("Evaluating the models against historical prices…"):
+        result = estimate_forecast(
+            close_series[ticker], close_series["SPY"], close_series["QQQ"],
+            horizon, intraday_forecast,
+        )
+    draw_forecast(result, intraday_forecast, threshold)
 
 
-dashboard()
+research_terminal()
