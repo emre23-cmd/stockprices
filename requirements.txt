@@ -1,1 +1,8 @@
-
+streamlit>=1.42
+yfinance>=0.2.66
+pandas
+numpy
+statsmodels
+plotly
+requests
+tzdata
