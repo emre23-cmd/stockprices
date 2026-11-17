@@ -57,7 +57,6 @@ GROUPS = {
     "WMT:Walmart|COST:Costco|HD:Home Depot|LOW:Lowe's|"
     "MCD:McDonald's|SBUX:Starbucks|NKE:Nike|TGT:Target|"
     "PG:Procter & Gamble|KO:Coca-Cola|PEP:PepsiCo|TJX:TJX Companies"
-),
         
     ),
     "Financials": (
