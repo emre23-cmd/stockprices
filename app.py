@@ -50,12 +50,15 @@ GROUPS = {
         "SNOW:Snowflake|DELL:Dell Technologies"
     ),
     "Consumer & Communications": (
-        "AMZN:Amazon|GOOGL:Alphabet|META:Meta Platforms|NFLX:Netflix|"
-        "TSLA:Tesla|UBER:Uber|ABNB:Airbnb|DASH:DoorDash|"
-        "BKNG:Booking Holdings|SPOT:Spotify|SHOP:Shopify|DIS:Walt Disney|"
-        "WMT:Walmart|COST:Costco|HD:Home Depot|LOW:Lowe's|"
-        "MCD:McDonald's|SBUX:Starbucks|NKE:Nike|TGT:Target|"
-        "PG:Procter & Gamble|KO:Coca-Cola|PEP:PepsiCo|TJX:TJX Companies"
+    "TTWO:Take-Two Interactive|"
+    "AMZN:Amazon|GOOGL:Alphabet|META:Meta Platforms|NFLX:Netflix|"
+    "TSLA:Tesla|UBER:Uber|ABNB:Airbnb|DASH:DoorDash|"
+    "BKNG:Booking Holdings|SPOT:Spotify|SHOP:Shopify|DIS:Walt Disney|"
+    "WMT:Walmart|COST:Costco|HD:Home Depot|LOW:Lowe's|"
+    "MCD:McDonald's|SBUX:Starbucks|NKE:Nike|TGT:Target|"
+    "PG:Procter & Gamble|KO:Coca-Cola|PEP:PepsiCo|TJX:TJX Companies"
+),
+        
     ),
     "Financials": (
         "JPM:JPMorgan|BAC:Bank of America|GS:Goldman Sachs|MS:Morgan Stanley|"
